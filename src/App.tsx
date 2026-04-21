@@ -48,7 +48,7 @@ export default function App() {
       {/* Header */}
       <header className="bg-slate-900 text-white p-4 text-center flex-shrink-0">
         <h1 className="text-lg font-bold tracking-[-0.5px] m-0 uppercase">Pickleball Pro Manager</h1>
-        <p className="m-0 mt-1 text-[11px] opacity-70 uppercase tracking-[0.05em]">Giải đấu nội bộ - Round Robin</p>
+        <p className="m-0 mt-1 text-[11px] opacity-70 uppercase tracking-[0.05em]">Giải đấu nội bộ - HM Pickleball</p>
       </header>
 
       {/* Main Content Area */}
