@@ -1,27 +1,26 @@
 import { useState, useEffect } from 'react';
-import { Trophy, CalendarDays, Users, Save, CheckCircle2 } from 'lucide-react';
+import { Trophy, CalendarDays, Users, Save, CheckCircle2, Play, Settings2, RotateCcw, ArrowLeft, UserPlus } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-// Ma trận lịch thi đấu theo yêu cầu
-const SCHEDULE = [
-  { round: 1, rest: [1, 6], matches: [{ court: 1, t1: [2, 10], t2: [3, 9] }, { court: 2, t1: [4, 8], t2: [5, 7] }] },
-  { round: 2, rest: [2, 7], matches: [{ court: 1, t1: [3, 1], t2: [4, 10] }, { court: 2, t1: [5, 9], t2: [6, 8] }] },
-  { round: 3, rest: [3, 8], matches: [{ court: 1, t1: [4, 2], t2: [5, 1] }, { court: 2, t1: [6, 10], t2: [7, 9] }] },
-  { round: 4, rest: [4, 9], matches: [{ court: 1, t1: [5, 3], t2: [6, 2] }, { court: 2, t1: [7, 1], t2: [8, 10] }] },
-  { round: 5, rest: [5, 10], matches: [{ court: 1, t1: [6, 4], t2: [7, 3] }, { court: 2, t1: [8, 2], t2: [9, 1] }] },
-  { round: 6, rest: [1, 6], matches: [{ court: 1, t1: [7, 5], t2: [8, 4] }, { court: 2, t1: [9, 3], t2: [10, 2] }] },
-  { round: 7, rest: [2, 7], matches: [{ court: 1, t1: [8, 6], t2: [9, 5] }, { court: 2, t1: [10, 4], t2: [1, 3] }] },
-  { round: 8, rest: [3, 8], matches: [{ court: 1, t1: [9, 7], t2: [10, 6] }, { court: 2, t1: [1, 5], t2: [2, 4] }] },
-  { round: 9, rest: [4, 9], matches: [{ court: 1, t1: [10, 8], t2: [1, 7] }, { court: 2, t1: [2, 6], t2: [3, 5] }] },
-  { round: 10, rest: [5, 10], matches: [{ court: 1, t1: [1, 9], t2: [2, 8] }, { court: 2, t1: [3, 7], t2: [4, 6] }] },
-];
+// Types
+interface Match { court: number; t1: number[]; t2: number[]; }
+interface RoundData { round: number; matches: Match[]; rest: number[]; }
+interface TournamentConfig { numPlayers: number; numCourts: number; numRounds: number; }
 
-type TabType = 'settings' | 'matches' | 'leaderboard';
+type TabType = 'matches' | 'leaderboard';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabType>('matches');
-  
-  // State: Tên Vận động viên
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [setupStep, setSetupStep] = useState<number>(() => {
+    const saved = localStorage.getItem('pb_setupStep');
+    return saved !== null ? Number(saved) : 0;
+  });
+
+  const [config, setConfig] = useState<TournamentConfig>(() => {
+    const saved = localStorage.getItem('pb_config');
+    return saved ? JSON.parse(saved) : { numPlayers: 10, numCourts: 2, numRounds: 10 };
+  });
+
   const [players, setPlayers] = useState<Record<number, string>>(() => {
     const saved = localStorage.getItem('pb_players');
     if (saved) return JSON.parse(saved);
@@ -30,88 +29,261 @@ export default function App() {
     return initial;
   });
 
-  // State: Điểm số các trận (Key: "round-court", Value: {t1, t2})
+  const [schedule, setSchedule] = useState<RoundData[]>(() => {
+    const saved = localStorage.getItem('pb_schedule');
+    return saved ? JSON.parse(saved) : [];
+  });
+
   const [scores, setScores] = useState<Record<string, {t1: number, t2: number}>>(() => {
     const saved = localStorage.getItem('pb_scores');
     if (saved) return JSON.parse(saved);
     return {};
   });
 
+  const [activeTab, setActiveTab] = useState<TabType>('matches');
+
   // Lưu changes vào localStorage
   useEffect(() => {
+    localStorage.setItem('pb_setupStep', String(setupStep));
+    localStorage.setItem('pb_config', JSON.stringify(config));
     localStorage.setItem('pb_players', JSON.stringify(players));
+    localStorage.setItem('pb_schedule', JSON.stringify(schedule));
     localStorage.setItem('pb_scores', JSON.stringify(scores));
-  }, [players, scores]);
+  }, [setupStep, config, players, schedule, scores]);
+
+  const handleStartConfig = (newConfig: TournamentConfig) => {
+    setConfig(newConfig);
+    // Initialize empty names if expanding
+    const newPlayers = { ...players };
+    for (let i = 1; i <= newConfig.numPlayers; i++) {
+       if (!newPlayers[i]) newPlayers[i] = `VĐV ${i}`;
+    }
+    setPlayers(newPlayers);
+    setSetupStep(1);
+  };
+
+  const handleStartTournament = (finalPlayers: Record<number, string>) => {
+    setPlayers(finalPlayers);
+    
+    // Tạo schedule tự động
+    const newSchedule = generateMatches(config.numPlayers, config.numCourts, config.numRounds);
+    setSchedule(newSchedule);
+    setScores({});
+    setActiveTab('matches');
+    setSetupStep(2);
+  };
+
+  const handleResetApp = () => {
+    setShowResetConfirm(true);
+  };
+
+  const confirmReset = () => {
+    setSetupStep(0);
+    setScores({});
+    setSchedule([]);
+    setShowResetConfirm(false);
+  };
 
   return (
     <div className="flex flex-col h-screen bg-slate-100 text-slate-800 font-sans app-container max-w-md mx-auto relative shadow-[0_0_40px_rgba(0,0,0,0.05)]">
       {/* Header */}
-      <header className="bg-slate-900 text-white p-4 text-center flex-shrink-0">
+      <header className="bg-slate-900 text-white p-4 text-center flex-shrink-0 relative">
         <h1 className="text-lg font-bold tracking-[-0.5px] m-0 uppercase">Pickleball Pro Manager</h1>
         <p className="m-0 mt-1 text-[11px] opacity-70 uppercase tracking-[0.05em]">Giải đấu nội bộ - HM Pickleball</p>
+        
+        {setupStep === 2 && (
+          <button 
+            onClick={handleResetApp} 
+            className="absolute right-4 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-white transition-colors"
+            title="Tạo giải mới"
+          >
+            <RotateCcw size={18} />
+          </button>
+        )}
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto pb-16 bg-slate-50">
+      <main className="flex-1 overflow-y-auto pb-16 bg-slate-50 relative">
+        {showResetConfirm && (
+          <div className="absolute inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-2xl p-5 max-w-[300px] w-full shadow-2xl text-center">
+              <h3 className="font-bold text-lg mb-2 text-slate-800">Tạo giải mới?</h3>
+              <p className="text-sm text-slate-500 mb-5">Mọi dữ liệu điểm số, lịch thi đấu và danh sách VĐV hiện tại sẽ bị xóa hoàn toàn.</p>
+              <div className="flex gap-3">
+                <button onClick={() => setShowResetConfirm(false)} className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 rounded-xl font-bold text-slate-600 transition-colors">Hủy</button>
+                <button onClick={confirmReset} className="flex-1 py-2.5 bg-red-500 hover:bg-red-600 focus:ring-4 focus:ring-red-100 text-white rounded-xl font-bold transition-colors">Đồng ý</button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <AnimatePresence mode="wait">
-          {activeTab === 'settings' && <SettingsTab key="settings" players={players} setPlayers={setPlayers} />}
-          {activeTab === 'matches' && <MatchesTab key="matches" players={players} scores={scores} setScores={setScores} />}
-          {activeTab === 'leaderboard' && <LeaderboardTab key="leaderboard" players={players} scores={scores} />}
+          {setupStep === 0 && <Step0Config key="step0" initialConfig={config} onNext={handleStartConfig} />}
+          {setupStep === 1 && <Step1Players key="step1" config={config} initialPlayers={players} onBack={() => setSetupStep(0)} onStart={handleStartTournament} />}
+          {setupStep === 2 && activeTab === 'matches' && <MatchesTab key="matches" players={players} scores={scores} setScores={setScores} schedule={schedule} />}
+          {setupStep === 2 && activeTab === 'leaderboard' && <LeaderboardTab key="leaderboard" players={players} scores={scores} schedule={schedule} config={config} />}
         </AnimatePresence>
       </main>
 
       {/* Bottom Navigation */}
-      <nav className="bg-slate-800 text-slate-400 fixed bottom-0 w-full max-w-md mx-auto z-20 pb-safe">
-        <div className="flex justify-around items-center h-[60px] text-[12px] uppercase font-bold tracking-[0.05em]">
-          <NavItem 
-            icon={<CalendarDays size={18} />} 
-            label="Thi đấu" 
-            isActive={activeTab === 'matches'} 
-            onClick={() => setActiveTab('matches')} 
-          />
-          <NavItem 
-            icon={<Trophy size={18} />} 
-            label="Xếp hạng" 
-            isActive={activeTab === 'leaderboard'} 
-            onClick={() => setActiveTab('leaderboard')} 
-          />
-          <NavItem 
-            icon={<Users size={18} />} 
-            label="VĐV" 
-            isActive={activeTab === 'settings'} 
-            onClick={() => setActiveTab('settings')} 
-          />
-        </div>
-      </nav>
+      {setupStep === 2 && (
+        <nav className="bg-slate-800 text-slate-400 fixed bottom-0 w-full max-w-md mx-auto z-20 pb-safe">
+          <div className="grid grid-cols-2 items-center h-[60px] text-[12px] uppercase font-bold tracking-[0.05em]">
+            <NavItem 
+              icon={<CalendarDays size={18} />} 
+              label="Thi đấu" 
+              isActive={activeTab === 'matches'} 
+              onClick={() => setActiveTab('matches')} 
+            />
+            <NavItem 
+              icon={<Trophy size={18} />} 
+              label="Xếp hạng" 
+              isActive={activeTab === 'leaderboard'} 
+              onClick={() => setActiveTab('leaderboard')} 
+            />
+          </div>
+        </nav>
+      )}
     </div>
   );
 }
 
 // ==========================================
-// THÀNH PHẦN 1: CÀI ĐẶT VĐV
+// THUẬT TOÁN TẠO LỊCH NGẪU NHIÊN
 // ==========================================
-function SettingsTab({ players, setPlayers }: { players: Record<number, string>, setPlayers: any, key?: string }) {
-  const [localPlayers, setLocalPlayers] = useState(players);
-  const [saved, setSaved] = useState(false);
+function generateMatches(numPlayers: number, numCourts: number, numRounds: number): RoundData[] {
+  const schedule: RoundData[] = [];
+  
+  for (let r = 1; r <= numRounds; r++) {
+    // 1. Tạo mảng ID và Xáo trộn ngẫu nhiên
+    const playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
+    for (let i = playerIds.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [playerIds[i], playerIds[j]] = [playerIds[j], playerIds[i]];
+    }
 
-  const handleSave = () => {
-    setPlayers(localPlayers);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
+    const matches: Match[] = [];
+    let pIndex = 0;
+    
+    // 2. Chia cặp vào sân (mỗi sân 4 người đấu đôi)
+    for (let c = 1; c <= numCourts; c++) {
+      if (pIndex + 4 <= numPlayers) {
+        matches.push({
+          court: c,
+          t1: [playerIds[pIndex], playerIds[pIndex + 1]],
+          t2: [playerIds[pIndex + 2], playerIds[pIndex + 3]]
+        });
+        pIndex += 4;
+      }
+    }
+    
+    // 3. Những người còn lại sẽ nghỉ
+    const rest = playerIds.slice(pIndex).sort((a,b) => a - b);
+    schedule.push({ round: r, matches, rest });
+  }
+  
+  return schedule;
+}
+
+// ==========================================
+// BƯỚC 0: CẤU HÌNH GIẢI ĐẤU
+// ==========================================
+function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfig, onNext: (c: TournamentConfig) => void, key?: string }) {
+  const [numPlayers, setNumPlayers] = useState(initialConfig.numPlayers);
+  const [numCourts, setNumCourts] = useState(initialConfig.numCourts);
+  const [numRounds, setNumRounds] = useState(initialConfig.numRounds);
+
+  // Validation
+  useEffect(() => {
+    const maxPossCourts = Math.floor(numPlayers / 4);
+    if (numCourts > maxPossCourts && maxPossCourts > 0) {
+      setNumCourts(maxPossCourts);
+    }
+  }, [numPlayers]);
+
+  const maxPossCourts = Math.floor(numPlayers / 4);
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
-      className="p-4"
-    >
-      <h3 className="text-sm text-slate-500 mb-3 uppercase font-bold">Cài đặt VĐV</h3>
-      <div className="bg-white border border-slate-200 rounded-xl mb-4 shadow-[0_2px_4px_rgba(0,0,0,0.02)]">
-        {Array.from({ length: 10 }).map((_, i) => {
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="p-4">
+      <div className="text-center mb-6 mt-4">
+        <Settings2 size={40} className="mx-auto text-lime-500 mb-2" />
+        <h2 className="text-xl font-bold text-slate-800 uppercase">Khởi tạo giải đấu</h2>
+        <p className="text-xs text-slate-500 mt-1">Cấu hình các tham số cơ bản</p>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-[0_2px_4px_rgba(0,0,0,0.02)] p-4 border border-slate-200 space-y-5">
+        
+        {/* Số VĐV */}
+        <div>
+          <label className="block text-sm font-bold text-slate-700 mb-2 uppercase text-[11px]">Số lượng Vận Động Viên (Tối thiểu: 4)</label>
+          <input 
+            type="number" min="4" max="100"
+            value={numPlayers} 
+            onChange={e => setNumPlayers(Math.max(4, Number(e.target.value)))}
+            className="w-full bg-slate-50 border border-slate-200 font-bold text-slate-800 rounded-lg px-4 py-3 focus:outline-none focus:border-lime-500 transition-colors"
+          />
+        </div>
+
+        {/* Số Sân */}
+        <div>
+          <label className="block text-sm font-bold text-slate-700 mb-2 uppercase text-[11px]">
+            Số Sân Thi Đấu 
+            {maxPossCourts < numCourts && <span className="text-red-500 ml-1">(Tối đa: {Math.max(1, maxPossCourts)})</span>}
+          </label>
+          <input 
+            type="number" min="1" max={Math.max(1, maxPossCourts)}
+            value={numCourts} 
+            onChange={e => setNumCourts(Math.min(Math.max(1, maxPossCourts), Math.max(1, Number(e.target.value))))}
+            className="w-full bg-slate-50 border border-slate-200 font-bold text-slate-800 rounded-lg px-4 py-3 focus:outline-none focus:border-lime-500 transition-colors"
+          />
+          <p className="text-[10px] text-slate-400 mt-1.5">*Mỗi sân yêu cầu 4 VĐV. Các VĐV còn thừa sẽ nghỉ xoay vòng.</p>
+        </div>
+
+        {/* Số Vòng */}
+        <div>
+          <label className="block text-sm font-bold text-slate-700 mb-2 uppercase text-[11px]">Số Vòng Đấu</label>
+          <input 
+            type="number" min="1" max="50"
+            value={numRounds} 
+            onChange={e => setNumRounds(Math.max(1, Number(e.target.value)))}
+            className="w-full bg-slate-50 border border-slate-200 font-bold text-slate-800 rounded-lg px-4 py-3 focus:outline-none focus:border-lime-500 transition-colors"
+          />
+        </div>
+
+      </div>
+
+      <button 
+        onClick={() => onNext({ numPlayers, numCourts, numRounds })}
+        className="w-full mt-6 bg-lime-500 hover:bg-lime-600 text-white font-bold py-4 rounded-xl shadow-[0_4px_6px_-1px_rgba(132,204,22,0.2)] flex items-center justify-center gap-2 uppercase tracking-wide transition-colors active:scale-[0.98]"
+      >
+        Tiếp theo
+        <ArrowLeft className="rotate-180" size={18} />
+      </button>
+    </motion.div>
+  );
+}
+
+// ==========================================
+// BƯỚC 1: NHẬP TÊN VĐV
+// ==========================================
+function Step1Players({ config, initialPlayers, onStart, onBack }: any) {
+  const [localPlayers, setLocalPlayers] = useState<Record<number, string>>(initialPlayers);
+
+  return (
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="p-4">
+      <div className="flex items-center gap-3 mb-4">
+        <button onClick={onBack} className="p-2 bg-slate-200 text-slate-600 rounded-full hover:bg-slate-300">
+          <ArrowLeft size={16} />
+        </button>
+        <h3 className="text-sm text-slate-500 uppercase font-bold m-0">Nhập danh sách VĐV ({config.numPlayers})</h3>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-xl mb-6 shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden">
+        {Array.from({ length: config.numPlayers }).map((_, i) => {
           const id = i + 1;
           return (
             <div key={id} className="flex items-center p-3 border-b border-slate-100 last:border-0">
-              <span className="w-7 h-7 flex items-center justify-center bg-slate-200 text-slate-700 rounded-full font-bold text-xs mr-3">
+              <span className="w-7 h-7 flex-shrink-0 flex items-center justify-center bg-slate-200 text-slate-700 rounded-full font-bold text-xs mr-3">
                 {id}
               </span>
               <input
@@ -127,28 +299,31 @@ function SettingsTab({ players, setPlayers }: { players: Record<number, string>,
       </div>
       
       <button
-        onClick={handleSave}
-        className="w-full flex items-center justify-center gap-2 bg-lime-500 hover:bg-lime-600 shadow-[0_4px_6px_-1px_rgba(132,204,22,0.2)] text-white font-bold py-3.5 px-4 rounded-lg transition-colors active:scale-[0.98]"
+        onClick={() => onStart(localPlayers)}
+        className="w-full flex items-center justify-center gap-2 bg-lime-500 hover:bg-lime-600 shadow-[0_4px_6px_-1px_rgba(132,204,22,0.2)] text-white font-bold py-4 rounded-xl transition-colors active:scale-[0.98] uppercase tracking-wide"
       >
-        {saved ? <CheckCircle2 className="w-5 h-5" /> : <Save className="w-5 h-5" />}
-        {saved ? 'ĐÃ LƯU THÀNH CÔNG' : 'LƯU DANH SÁCH VĐV'}
+        <Play className="fill-current" size={18} />
+        Bắt đầu xếp lịch
       </button>
     </motion.div>
   );
 }
 
 // ==========================================
-// THÀNH PHẦN 2: THI ĐẤU (Matches)
+// THÀNH PHẦN TAB: CÀI ĐẶT VĐV SAU KHI START ĐÃ BỊ LOẠI BỎ THEO YÊU CẦU
 // ==========================================
-function MatchesTab({ players, scores, setScores }: { players: Record<number, string>, scores: any, setScores: any, key?: string }) {
+
+// ==========================================
+// THÀNH PHẦN TAB: THI ĐẤU (Matches)
+// ==========================================
+function MatchesTab({ players, scores, setScores, schedule }: { players: Record<number, string>, scores: any, setScores: any, schedule: RoundData[], key?: string }) {
   const [selectedRound, setSelectedRound] = useState(1);
-  const roundData = SCHEDULE.find(r => r.round === selectedRound)!;
+  const roundData = schedule.find(r => r.round === selectedRound);
+
+  if (!roundData) return null;
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-      className="p-4"
-    >
+    <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="p-4">
       <div className="flex justify-between items-center mb-4">
         <h2 className="m-0 text-base font-bold text-slate-800">Vòng thi đấu: {String(selectedRound).padStart(2, '0')}</h2>
         <select 
@@ -156,7 +331,7 @@ function MatchesTab({ players, scores, setScores }: { players: Record<number, st
           onChange={(e) => setSelectedRound(Number(e.target.value))}
           className="px-3 py-1.5 rounded-md border border-slate-300 font-semibold text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-lime-500"
         >
-          {SCHEDULE.map(r => (
+          {schedule.map(r => (
             <option key={r.round} value={r.round}>Vòng {r.round}</option>
           ))}
         </select>
@@ -175,18 +350,23 @@ function MatchesTab({ players, scores, setScores }: { players: Record<number, st
             setScores={setScores}
           />
         ))}
+        {roundData.matches.length === 0 && (
+           <p className="text-center text-sm text-slate-400 py-4">Không đủ người để xếp trận đôi.</p>
+        )}
       </div>
 
-      <div className="my-4">
-        <span className="text-[11px] font-bold text-slate-500 uppercase block mb-2.5">Đang nghỉ vòng này:</span>
-        <div className="flex gap-2">
-          {roundData.rest.map(id => (
-            <span key={id} className="bg-red-50 text-red-500 px-2.5 py-1 rounded-full text-[11px] font-semibold border border-red-100">
-              {players[id]} (P{id})
-            </span>
-          ))}
+      {roundData.rest.length > 0 && (
+        <div className="my-4">
+          <span className="text-[11px] font-bold text-slate-500 uppercase block mb-2.5">Đang nghỉ vòng này:</span>
+          <div className="flex flex-wrap gap-2">
+            {roundData.rest.map(id => (
+              <span key={id} className="bg-red-50 text-red-500 px-2.5 py-1 rounded-full text-[11px] font-semibold border border-red-100">
+                {players[id]} (P{id})
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </motion.div>
   );
 }
@@ -221,12 +401,11 @@ function MatchCard({ round, court, t1, t2, players, scores, setScores }: any) {
     <div className="bg-white border border-slate-200 rounded-xl p-3 mb-3 shadow-[0_2px_4px_rgba(0,0,0,0.02)]">
       <div className="flex justify-between items-center mb-2.5 border-b border-slate-100 pb-1.5">
         <span className="font-extrabold text-slate-700 text-sm uppercase">Sân thi đấu {court}</span>
-        <span className="text-[11px] text-slate-500 font-medium">12:00 PHÚT</span>
       </div>
       <div className="grid grid-cols-[1fr_40px_1fr] gap-2.5 items-center">
-        <div className="text-center">
-          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800">{players[t1[0]]} (P{t1[0]})</span>
-          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800">{players[t1[1]]} (P{t1[1]})</span>
+        <div className="text-center overflow-hidden">
+          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t1[0]]} <span className="opacity-50 text-[10px]">(P{t1[0]})</span></span>
+          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t1[1]]} <span className="opacity-50 text-[10px]">(P{t1[1]})</span></span>
           <input 
             type="number" 
             value={localT1} 
@@ -236,9 +415,9 @@ function MatchCard({ round, court, t1, t2, players, scores, setScores }: any) {
           />
         </div>
         <div className="text-center font-black text-slate-400">VS</div>
-        <div className="text-center">
-          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800">{players[t2[0]]} (P{t2[0]})</span>
-          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800">{players[t2[1]]} (P{t2[1]})</span>
+        <div className="text-center overflow-hidden">
+          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t2[0]]} <span className="opacity-50 text-[10px]">(P{t2[0]})</span></span>
+          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t2[1]]} <span className="opacity-50 text-[10px]">(P{t2[1]})</span></span>
           <input 
             type="number" 
             value={localT2} 
@@ -260,17 +439,17 @@ function MatchCard({ round, court, t1, t2, players, scores, setScores }: any) {
 }
 
 // ==========================================
-// THÀNH PHẦN 3: BẢNG XẾP HẠNG
+// THÀNH PHẦN TAB: BẢNG XẾP HẠNG
 // ==========================================
-function LeaderboardTab({ players, scores }: { players: Record<number, string>, scores: any, key?: string }) {
+function LeaderboardTab({ players, scores, schedule, config }: { players: Record<number, string>, scores: any, schedule: RoundData[], config: TournamentConfig, key?: string }) {
   
   // Calculate scores for all players
-  const leaderboard = Array.from({ length: 10 }).map((_, i) => {
+  const leaderboard = Array.from({ length: config.numPlayers }).map((_, i) => {
     const id = i + 1;
     let total = 0;
     const roundScores: Record<number, number> = {};
 
-    SCHEDULE.forEach(roundData => {
+    schedule.forEach(roundData => {
       roundData.matches.forEach(match => {
         const matchKey = `${roundData.round}-${match.court}`;
         const matchScore = scores[matchKey];
@@ -284,7 +463,6 @@ function LeaderboardTab({ players, scores }: { players: Record<number, string>, 
           }
         }
       });
-      // Nếu không có điểm trận này do nghỉ hoặc chưa nhập, giá trị là undefined hoặc '-'
     });
 
     return { id, name: players[id], total, roundScores };
@@ -294,21 +472,17 @@ function LeaderboardTab({ players, scores }: { players: Record<number, string>, 
   leaderboard.sort((a, b) => b.total - a.total);
 
   return (
-    <motion.div 
-      initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}
-      className="p-4"
-    >
+    <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="p-4">
       <h3 className="text-sm text-slate-500 mb-2 uppercase font-bold">Xếp hạng hiện tại</h3>
       
       <div className="bg-white overflow-x-auto">
-        <table className="w-full text-left border-collapse text-[13px]">
+        <table className="w-full text-left border-collapse text-[13px] min-w-max">
           <thead>
             <tr>
-              <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200 w-10 text-center">HẠNG</th>
-              <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200">TÊN VĐV</th>
-              <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200 text-right pr-4">TỔNG</th>
-              {/* Dynamic round headers if want to scroll sideways */}
-              {Array.from({ length: 10 }).map((_, i) => (
+              <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200 w-10 text-center sticky left-0 bg-white shadow-[2px_0_4px_rgba(0,0,0,0.02)] z-10">HẠNG</th>
+              <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200 sticky left-10 bg-white shadow-[2px_0_4px_rgba(0,0,0,0.02)] z-10">TÊN VĐV</th>
+              <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200 text-right pr-4 bg-white z-10">TỔNG</th>
+              {Array.from({ length: config.numRounds }).map((_, i) => (
                  <th key={i} className="p-2 font-semibold text-slate-400 border-b-2 border-slate-200 text-center">V{i+1}</th>
               ))}
             </tr>
@@ -327,17 +501,17 @@ function LeaderboardTab({ players, scores }: { players: Record<number, string>, 
 
               return (
                 <tr key={player.id} className={`border-b border-slate-100 ${rowBg}`}>
-                  <td className="p-2 py-2.5 text-center">
+                  <td className={`p-2 py-2.5 text-center sticky left-0 z-10 ${rowBg || 'bg-white'}`}>
                     <span className={rankStyle}>{rank}</span>
                   </td>
-                  <td className="p-2 py-2.5 font-bold text-slate-800 whitespace-nowrap">
+                  <td className={`p-2 py-2.5 font-bold text-slate-800 whitespace-nowrap sticky left-10 z-10 ${rowBg || 'bg-white'} shadow-[2px_0_4px_rgba(0,0,0,0.02)]`}>
                     {player.name} <span className="opacity-60 font-normal text-xs">(P{player.id})</span>
                   </td>
-                  <td className="p-2 py-2.5 font-bold text-slate-800 text-right pr-4">
+                  <td className={`p-2 py-2.5 font-bold text-slate-800 text-right pr-4 ${rowBg || 'bg-white'} z-0`}>
                     {player.total}
                   </td>
-                  {Array.from({ length: 10 }).map((_, i) => (
-                    <td key={i} className="p-2 py-2.5 text-center text-slate-500">
+                  {Array.from({ length: config.numRounds }).map((_, i) => (
+                    <td key={i} className={`p-2 py-2.5 text-center text-slate-500 ${rowBg || 'bg-white'} z-0`}>
                       {player.roundScores[i+1] !== undefined ? player.roundScores[i+1] : '-'}
                     </td>
                   ))}
@@ -347,7 +521,7 @@ function LeaderboardTab({ players, scores }: { players: Record<number, string>, 
           </tbody>
         </table>
       </div>
-      <p className="text-[10px] text-slate-400 mt-4 text-center">© 2024 Pickleball Apps Script System</p>
+      <p className="text-[10px] text-slate-400 mt-4 text-center">© Hoàng Mai Pickleball</p>
     </motion.div>
   );
 }
