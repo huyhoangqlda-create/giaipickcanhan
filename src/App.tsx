@@ -154,7 +154,15 @@ export default function App() {
 function generateMatches(numPlayers: number, numCourts: number, numRounds: number): RoundData[] {
   const schedule: RoundData[] = [];
   const playCounts: Record<number, number> = {};
-  for (let i = 1; i <= numPlayers; i++) playCounts[i] = 0;
+  const pairHistory: Record<number, Record<number, number>> = {};
+  
+  for (let i = 1; i <= numPlayers; i++) {
+    playCounts[i] = 0;
+    pairHistory[i] = {};
+    for (let j = 1; j <= numPlayers; j++) {
+      pairHistory[i][j] = 0;
+    }
+  }
 
   let r = 1;
   while (true) {
@@ -204,24 +212,51 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
     // Cập nhật thống kê lượt ra sân
     playingThisRound.forEach(id => playCounts[id]++);
 
-    // 5. Xáo trộn lại nhóm người được chọn để chia cặp/số trận thật ngẫu nhiên
+    // 5. Xáo trộn lại nhóm người được chọn để tạo nền tảng ngẫu nhiên trước khi chia cặp
     for (let i = playingThisRound.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [playingThisRound[i], playingThisRound[j]] = [playingThisRound[j], playingThisRound[i]];
     }
 
     const matches: Match[] = [];
-    let pIndex = 0;
+    let pool = [...playingThisRound];
+
+    // Hàm bốc cặp thông minh: tránh lặp lại partner
+    const formPair = () => {
+      if (pool.length < 2) return [];
+      const p1 = pool.shift()!; // Bốc người đầu tiên
+      
+      // Tìm p2 trong pool có số lần đánh cặp với p1 ít nhất
+      let minPairCount = Infinity;
+      for (const p of pool) {
+        if (pairHistory[p1][p] < minPairCount) {
+          minPairCount = pairHistory[p1][p];
+        }
+      }
+      
+      // Lọc các ứng viên thỏa mãn minPairCount
+      const candidates = pool.filter(p => pairHistory[p1][p] === minPairCount);
+      // Giữa những người thỏa mãn, random chọn 1
+      const p2 = candidates[Math.floor(Math.random() * candidates.length)];
+      
+      // Xóa p2 khỏi pool
+      pool.splice(pool.indexOf(p2), 1);
+      
+      // Cập nhật lịch sử đồng đội
+      pairHistory[p1][p2]++;
+      pairHistory[p2][p1]++;
+      
+      return [p1, p2];
+    };
     
-    // 6. Xếp các VĐV vào sân
+    // 6. Xếp các cặp vào sân
     for (let c = 1; c <= courtsToUse; c++) {
-      if (pIndex + 4 <= playingThisRound.length) {
+      if (pool.length >= 4) {
         matches.push({
           court: c,
-          t1: [playingThisRound[pIndex], playingThisRound[pIndex + 1]],
-          t2: [playingThisRound[pIndex + 2], playingThisRound[pIndex + 3]]
+          t1: formPair(),
+          t2: formPair()
         });
-        pIndex += 4;
       }
     }
     
