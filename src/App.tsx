@@ -149,37 +149,58 @@ export default function App() {
 }
 
 // ==========================================
-// THUẬT TOÁN TẠO LỊCH NGẪU NHIÊN
+// THUẬT TOÁN TẠO LỊCH CÔNG BẰNG & NGẪU NHIÊN
 // ==========================================
 function generateMatches(numPlayers: number, numCourts: number, numRounds: number): RoundData[] {
   const schedule: RoundData[] = [];
+  const playCounts: Record<number, number> = {};
+  for (let i = 1; i <= numPlayers; i++) playCounts[i] = 0;
+
+  const playersPerRound = numCourts * 4;
   
   for (let r = 1; r <= numRounds; r++) {
-    // 1. Tạo mảng ID và Xáo trộn ngẫu nhiên
+    // 1. Tạo mảng ID
     const playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
+    
+    // 2. Xáo trộn ngẫu nhiên tất cả các VĐV (Fisher-Yates) để bẻ gãy thứ tự
     for (let i = playerIds.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [playerIds[i], playerIds[j]] = [playerIds[j], playerIds[i]];
     }
 
+    // 3. Ưu tiên những người có số lượt chơi ít hơn (đảm bảo tính công bằng)
+    playerIds.sort((a, b) => playCounts[a] - playCounts[b]);
+
+    // 4. Chọn người được chơi và người nghỉ vòng này
+    const playingThisRound = playerIds.slice(0, playersPerRound);
+    const restingThisRound = playerIds.slice(playersPerRound).sort((a, b) => a - b);
+
+    // Cập nhật thống kê lượt ra sân
+    playingThisRound.forEach(id => playCounts[id]++);
+
+    // 5. Xáo trộn lại nhóm người được chọn để chia cặp/số trận thật ngẫu nhiên
+    for (let i = playingThisRound.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [playingThisRound[i], playingThisRound[j]] = [playingThisRound[j], playingThisRound[i]];
+    }
+
     const matches: Match[] = [];
     let pIndex = 0;
     
-    // 2. Chia cặp vào sân (mỗi sân 4 người đấu đôi)
+    // 6. Xếp các VĐV vào sân
     for (let c = 1; c <= numCourts; c++) {
-      if (pIndex + 4 <= numPlayers) {
+      if (pIndex + 4 <= playingThisRound.length) {
         matches.push({
           court: c,
-          t1: [playerIds[pIndex], playerIds[pIndex + 1]],
-          t2: [playerIds[pIndex + 2], playerIds[pIndex + 3]]
+          t1: [playingThisRound[pIndex], playingThisRound[pIndex + 1]],
+          t2: [playingThisRound[pIndex + 2], playingThisRound[pIndex + 3]]
         });
         pIndex += 4;
       }
     }
     
-    // 3. Những người còn lại sẽ nghỉ
-    const rest = playerIds.slice(pIndex).sort((a,b) => a - b);
-    schedule.push({ round: r, matches, rest });
+    // 7. Lưu lại lịch
+    schedule.push({ round: r, matches, rest: restingThisRound });
   }
   
   return schedule;
