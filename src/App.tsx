@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'motion/react';
 
 // Types
 interface Match { court: number; t1: number[]; t2: number[]; }
-interface RoundData { round: number; matches: Match[]; rest: number[]; }
+interface RoundData { round: number; matches: Match[]; rest: number[]; isBonus?: boolean; }
 interface TournamentConfig { numPlayers: number; numCourts: number; numRounds: number; }
 
 type TabType = 'matches' | 'leaderboard';
@@ -156,9 +156,35 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
   const playCounts: Record<number, number> = {};
   for (let i = 1; i <= numPlayers; i++) playCounts[i] = 0;
 
-  const playersPerRound = numCourts * 4;
+  let r = 1;
+  while (true) {
+    const counts = Object.values(playCounts);
+    const maxC = Math.max(...counts);
+    const minC = Math.min(...counts);
+
+    if (r > numRounds && maxC === minC) {
+      break;
+    }
+
+    // Safety guard to prevent infinite mathematical loops
+    if (r > 50) break; 
+
+    // Find exactly how many courts we need for the bonus round
+    let courtsToUse = numCourts;
+    if (r > numRounds) {
+      let target = maxC;
+      let deficit = 0;
+      while (true) {
+        deficit = counts.reduce((acc, c) => acc + (target - c), 0);
+        if (deficit % 4 === 0) break;
+        target++;
+      }
+      const matchesNeeded = deficit / 4;
+      courtsToUse = Math.min(numCourts, matchesNeeded);
+    }
+
+    const playersPerRound = courtsToUse * 4;
   
-  for (let r = 1; r <= numRounds; r++) {
     // 1. Tạo mảng ID
     const playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
     
@@ -188,7 +214,7 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
     let pIndex = 0;
     
     // 6. Xếp các VĐV vào sân
-    for (let c = 1; c <= numCourts; c++) {
+    for (let c = 1; c <= courtsToUse; c++) {
       if (pIndex + 4 <= playingThisRound.length) {
         matches.push({
           court: c,
@@ -200,7 +226,8 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
     }
     
     // 7. Lưu lại lịch
-    schedule.push({ round: r, matches, rest: restingThisRound });
+    schedule.push({ round: r, matches, rest: restingThisRound, isBonus: r > numRounds });
+    r++;
   }
   
   return schedule;
@@ -346,14 +373,17 @@ function MatchesTab({ players, scores, setScores, schedule }: { players: Record<
   return (
     <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} className="p-4">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="m-0 text-base font-bold text-slate-800">Vòng thi đấu: {String(selectedRound).padStart(2, '0')}</h2>
+        <h2 className="m-0 text-base font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
+          Vòng thi đấu: {String(selectedRound).padStart(2, '0')}
+          {roundData.isBonus && <span className="text-[11px] bg-lime-100 text-lime-700 px-2 py-0.5 rounded-full font-bold uppercase whitespace-nowrap hidden min-[360px]:inline-block">(Bổ sung)</span>}
+        </h2>
         <select 
           value={selectedRound} 
           onChange={(e) => setSelectedRound(Number(e.target.value))}
-          className="px-3 py-1.5 rounded-md border border-slate-300 font-semibold text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-lime-500"
+          className="px-3 py-1.5 rounded-md border border-slate-300 font-semibold text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-lime-500 max-w-[120px]"
         >
           {schedule.map(r => (
-            <option key={r.round} value={r.round}>Vòng {r.round}</option>
+            <option key={r.round} value={r.round}>Vòng {r.round} {r.isBonus ? '(Phụ)' : ''}</option>
           ))}
         </select>
       </div>
@@ -503,8 +533,8 @@ function LeaderboardTab({ players, scores, schedule, config }: { players: Record
               <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200 w-10 text-center sticky left-0 bg-white shadow-[2px_0_4px_rgba(0,0,0,0.02)] z-10">HẠNG</th>
               <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200 sticky left-10 bg-white shadow-[2px_0_4px_rgba(0,0,0,0.02)] z-10">TÊN VĐV</th>
               <th className="p-2 font-semibold text-slate-500 border-b-2 border-slate-200 text-right pr-4 bg-white z-10">TỔNG</th>
-              {Array.from({ length: config.numRounds }).map((_, i) => (
-                 <th key={i} className="p-2 font-semibold text-slate-400 border-b-2 border-slate-200 text-center">V{i+1}</th>
+              {schedule.map((r) => (
+                 <th key={r.round} className="p-2 font-semibold text-slate-400 border-b-2 border-slate-200 text-center whitespace-nowrap">V{r.round}</th>
               ))}
             </tr>
           </thead>
@@ -531,9 +561,9 @@ function LeaderboardTab({ players, scores, schedule, config }: { players: Record
                   <td className={`p-2 py-2.5 font-bold text-slate-800 text-right pr-4 ${rowBg || 'bg-white'} z-0`}>
                     {player.total}
                   </td>
-                  {Array.from({ length: config.numRounds }).map((_, i) => (
-                    <td key={i} className={`p-2 py-2.5 text-center text-slate-500 ${rowBg || 'bg-white'} z-0`}>
-                      {player.roundScores[i+1] !== undefined ? player.roundScores[i+1] : '-'}
+                  {schedule.map((r) => (
+                    <td key={r.round} className={`p-2 py-2.5 text-center text-slate-500 ${rowBg || 'bg-white'} z-0`}>
+                      {player.roundScores[r.round] !== undefined ? player.roundScores[r.round] : '-'}
                     </td>
                   ))}
                 </tr>
