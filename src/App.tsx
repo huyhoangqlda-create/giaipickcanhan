@@ -149,8 +149,33 @@ export default function App() {
 }
 
 // ==========================================
-// THUẬT TOÁN TẠO LỊCH CÔNG BẰNG & NGẪU NHIÊN
+// THUẬT TOÁN TẠO LỊCH CÔNG BẰNG & KHÔNG TRÙNG CẶP
 // ==========================================
+function findValidPairing(pool: number[], pairHistory: Record<number, Record<number, number>>, allowedRepeat: number = 0): number[][] | null {
+    if (pool.length === 0) return [];
+    
+    const p1 = pool[0];
+    const others = pool.slice(1);
+    
+    // Shuffle others to introduce variety in pairings
+    for (let i = others.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [others[i], others[j]] = [others[j], others[i]];
+    }
+    
+    for (let i = 0; i < others.length; i++) {
+        const p2 = others[i];
+        if (pairHistory[p1][p2] <= allowedRepeat) {
+            const remaining = others.filter(x => x !== p2);
+            const subPairing = findValidPairing(remaining, pairHistory, allowedRepeat);
+            if (subPairing !== null) {
+                return [[p1, p2], ...subPairing];
+            }
+        }
+    }
+    return null;
+}
+
 function generateMatches(numPlayers: number, numCourts: number, numRounds: number): RoundData[] {
   const schedule: RoundData[] = [];
   const playCounts: Record<number, number> = {};
@@ -174,10 +199,8 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
       break;
     }
 
-    // Safety guard to prevent infinite mathematical loops
-    if (r > 50) break; 
+    if (r > 50) break; // Guard
 
-    // Find exactly how many courts we need for the bonus round
     let courtsToUse = numCourts;
     if (r > numRounds) {
       let target = maxC;
@@ -188,80 +211,76 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
         target++;
       }
       const matchesNeeded = deficit / 4;
-      courtsToUse = Math.min(numCourts, matchesNeeded);
+      courtsToUse = Math.min(numCourts, Math.max(1, matchesNeeded));
     }
 
     const playersPerRound = courtsToUse * 4;
   
-    // 1. Tạo mảng ID
-    const playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
+    let selectedMatches: Match[] | null = null;
+    let selectedResting: number[] = [];
     
-    // 2. Xáo trộn ngẫu nhiên tất cả các VĐV (Fisher-Yates) để bẻ gãy thứ tự
-    for (let i = playerIds.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [playerIds[i], playerIds[j]] = [playerIds[j], playerIds[i]];
+    let allowedRepeat = 0;
+    let attempts = 0;
+    
+    while (!selectedMatches && allowedRepeat <= numRounds) {
+       attempts++;
+       
+       const randomness = Math.floor(attempts / 100) * 0.5;
+       
+       if (attempts > 500) {
+          allowedRepeat++;
+          attempts = 0; 
+       }
+
+       const playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
+       for (let i = playerIds.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [playerIds[i], playerIds[j]] = [playerIds[j], playerIds[i]];
+       }
+       
+       const weights: Record<number, number> = {};
+       playerIds.forEach(id => {
+           weights[id] = playCounts[id] + Math.random() * randomness;
+       });
+       
+       playerIds.sort((a, b) => weights[a] - weights[b]);
+       
+       const playingThisRound = playerIds.slice(0, playersPerRound);
+       const restingThisRound = playerIds.slice(playersPerRound).sort((a, b) => a - b);
+       
+       const pairing = findValidPairing(playingThisRound, pairHistory, allowedRepeat);
+       
+       if (pairing) {
+          for (let i = pairing.length - 1; i > 0; i--) {
+             const j = Math.floor(Math.random() * (i + 1));
+             [pairing[i], pairing[j]] = [pairing[j], pairing[i]];
+          }
+          const matches: Match[] = [];
+          for (let c = 0; c < courtsToUse; c++) {
+             if (c * 2 + 1 < pairing.length) {
+                 matches.push({
+                    court: c + 1,
+                    t1: pairing[c * 2],
+                    t2: pairing[c * 2 + 1]
+                 });
+             }
+          }
+          selectedMatches = matches;
+          selectedResting = restingThisRound;
+          
+          playingThisRound.forEach(id => playCounts[id]++);
+          for (const pair of pairing) {
+             pairHistory[pair[0]][pair[1]]++;
+             pairHistory[pair[1]][pair[0]]++;
+          }
+       }
     }
 
-    // 3. Ưu tiên những người có số lượt chơi ít hơn (đảm bảo tính công bằng)
-    playerIds.sort((a, b) => playCounts[a] - playCounts[b]);
-
-    // 4. Chọn người được chơi và người nghỉ vòng này
-    const playingThisRound = playerIds.slice(0, playersPerRound);
-    const restingThisRound = playerIds.slice(playersPerRound).sort((a, b) => a - b);
-
-    // Cập nhật thống kê lượt ra sân
-    playingThisRound.forEach(id => playCounts[id]++);
-
-    // 5. Xáo trộn lại nhóm người được chọn để tạo nền tảng ngẫu nhiên trước khi chia cặp
-    for (let i = playingThisRound.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [playingThisRound[i], playingThisRound[j]] = [playingThisRound[j], playingThisRound[i]];
-    }
-
-    const matches: Match[] = [];
-    let pool = [...playingThisRound];
-
-    // Hàm bốc cặp thông minh: tránh lặp lại partner
-    const formPair = () => {
-      if (pool.length < 2) return [];
-      const p1 = pool.shift()!; // Bốc người đầu tiên
-      
-      // Tìm p2 trong pool có số lần đánh cặp với p1 ít nhất
-      let minPairCount = Infinity;
-      for (const p of pool) {
-        if (pairHistory[p1][p] < minPairCount) {
-          minPairCount = pairHistory[p1][p];
-        }
-      }
-      
-      // Lọc các ứng viên thỏa mãn minPairCount
-      const candidates = pool.filter(p => pairHistory[p1][p] === minPairCount);
-      // Giữa những người thỏa mãn, random chọn 1
-      const p2 = candidates[Math.floor(Math.random() * candidates.length)];
-      
-      // Xóa p2 khỏi pool
-      pool.splice(pool.indexOf(p2), 1);
-      
-      // Cập nhật lịch sử đồng đội
-      pairHistory[p1][p2]++;
-      pairHistory[p2][p1]++;
-      
-      return [p1, p2];
-    };
-    
-    // 6. Xếp các cặp vào sân
-    for (let c = 1; c <= courtsToUse; c++) {
-      if (pool.length >= 4) {
-        matches.push({
-          court: c,
-          t1: formPair(),
-          t2: formPair()
-        });
-      }
+    if (!selectedMatches) {
+        break;
     }
     
-    // 7. Lưu lại lịch
-    schedule.push({ round: r, matches, rest: restingThisRound, isBonus: r > numRounds });
+    schedule.push({ round: r, matches: selectedMatches, rest: selectedResting, isBonus: r > numRounds });
     r++;
   }
   
