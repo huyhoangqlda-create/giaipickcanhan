@@ -1,11 +1,18 @@
 import { useState, useEffect } from 'react';
-import { Trophy, CalendarDays, Users, Save, CheckCircle2, Play, Settings2, RotateCcw, ArrowLeft, UserPlus } from 'lucide-react';
+import { Trophy, CalendarDays, Save, CheckCircle2, Play, Settings2, RotateCcw, ArrowLeft, Plus, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 // Types
 interface Match { court: number; t1: number[]; t2: number[]; }
 interface RoundData { round: number; matches: Match[]; rest: number[]; isBonus?: boolean; }
-interface TournamentConfig { numPlayers: number; numCourts: number; numRounds: number; }
+interface TeamRule { id: string; g1: string; g2: string; }
+interface TournamentConfig { 
+  numPlayers: number; 
+  numCourts: number; 
+  numRounds: number; 
+  groups: string[];
+  teamRules: TeamRule[];
+}
 
 type TabType = 'matches' | 'leaderboard';
 
@@ -18,14 +25,34 @@ export default function App() {
 
   const [config, setConfig] = useState<TournamentConfig>(() => {
     const saved = localStorage.getItem('pb_config');
-    return saved ? JSON.parse(saved) : { numPlayers: 10, numCourts: 2, numRounds: 10 };
+    if (saved) {
+       const parsed = JSON.parse(saved);
+       if (!parsed.groups) parsed.groups = ['Mặc định'];
+       if (!parsed.teamRules) parsed.teamRules = [];
+       return parsed;
+    }
+    return { numPlayers: 10, numCourts: 2, numRounds: 10, groups: ['Trình A', 'Trình B'], teamRules: [] };
   });
 
-  const [players, setPlayers] = useState<Record<number, string>>(() => {
-    const saved = localStorage.getItem('pb_players');
+  const [players, setPlayers] = useState<Record<number, {name: string, group: string}>>(() => {
+    const saved = localStorage.getItem('pb_players_v2');
     if (saved) return JSON.parse(saved);
-    const initial: Record<number, string> = {};
-    for (let i = 1; i <= 10; i++) initial[i] = `VĐV ${i}`;
+    
+    // Fallback for older version
+    const oldSaved = localStorage.getItem('pb_players');
+    const initial: Record<number, {name: string, group: string}> = {};
+    if (oldSaved) {
+       const parsed = JSON.parse(oldSaved);
+       for (const k in parsed) {
+          if (typeof parsed[k] === 'string') {
+              initial[k] = { name: parsed[k], group: '' };
+          } else {
+              initial[k] = parsed[k];
+          }
+       }
+    } else {
+       for (let i = 1; i <= 10; i++) initial[i] = { name: `VĐV ${i}`, group: 'Trình A' };
+    }
     return initial;
   });
 
@@ -46,7 +73,7 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('pb_setupStep', String(setupStep));
     localStorage.setItem('pb_config', JSON.stringify(config));
-    localStorage.setItem('pb_players', JSON.stringify(players));
+    localStorage.setItem('pb_players_v2', JSON.stringify(players));
     localStorage.setItem('pb_schedule', JSON.stringify(schedule));
     localStorage.setItem('pb_scores', JSON.stringify(scores));
   }, [setupStep, config, players, schedule, scores]);
@@ -56,17 +83,24 @@ export default function App() {
     // Initialize empty names if expanding
     const newPlayers = { ...players };
     for (let i = 1; i <= newConfig.numPlayers; i++) {
-       if (!newPlayers[i]) newPlayers[i] = `VĐV ${i}`;
+       if (!newPlayers[i]) newPlayers[i] = { name: `VĐV ${i}`, group: newConfig.groups[0] || '' };
     }
     setPlayers(newPlayers);
     setSetupStep(1);
   };
 
-  const handleStartTournament = (finalPlayers: Record<number, string>) => {
+  const handleStartTournament = (finalPlayers: Record<number, {name: string, group: string}>, finalConfig: TournamentConfig) => {
     setPlayers(finalPlayers);
+    setConfig(finalConfig);
     
     // Tạo schedule tự động
-    const newSchedule = generateMatches(config.numPlayers, config.numCourts, config.numRounds);
+    const newSchedule = generateMatches(
+      finalConfig.numPlayers, 
+      finalConfig.numCourts, 
+      finalConfig.numRounds,
+      finalPlayers,
+      finalConfig.teamRules
+    );
     setSchedule(newSchedule);
     setScores({});
     setActiveTab('matches');
@@ -151,7 +185,13 @@ export default function App() {
 // ==========================================
 // THUẬT TOÁN TẠO LỊCH CÔNG BẰNG & KHÔNG TRÙNG CẶP
 // ==========================================
-function findValidPairing(pool: number[], pairHistory: Record<number, Record<number, number>>, allowedRepeat: number = 0): number[][] | null {
+function findValidPairing(
+  pool: number[], 
+  pairHistory: Record<number, Record<number, number>>, 
+  players: Record<number, {name: string, group: string}>,
+  teamRules: TeamRule[],
+  allowedRepeat: number = 0
+): number[][] | null {
     if (pool.length === 0) return [];
     
     const p1 = pool[0];
@@ -165,9 +205,21 @@ function findValidPairing(pool: number[], pairHistory: Record<number, Record<num
     
     for (let i = 0; i < others.length; i++) {
         const p2 = others[i];
-        if (pairHistory[p1][p2] <= allowedRepeat) {
+        
+        let isValidPair = false;
+        if (teamRules.length === 0) {
+            isValidPair = true; // No rules, any pair is valid
+        } else {
+            const g1 = players[p1].group;
+            const g2 = players[p2].group;
+            isValidPair = teamRules.some(rule => 
+               (rule.g1 === g1 && rule.g2 === g2) || (rule.g1 === g2 && rule.g2 === g1)
+            );
+        }
+
+        if (isValidPair && pairHistory[p1][p2] <= allowedRepeat) {
             const remaining = others.filter(x => x !== p2);
-            const subPairing = findValidPairing(remaining, pairHistory, allowedRepeat);
+            const subPairing = findValidPairing(remaining, pairHistory, players, teamRules, allowedRepeat);
             if (subPairing !== null) {
                 return [[p1, p2], ...subPairing];
             }
@@ -176,7 +228,13 @@ function findValidPairing(pool: number[], pairHistory: Record<number, Record<num
     return null;
 }
 
-function generateMatches(numPlayers: number, numCourts: number, numRounds: number): RoundData[] {
+function generateMatches(
+  numPlayers: number, 
+  numCourts: number, 
+  numRounds: number,
+  players: Record<number, {name: string, group: string}>,
+  teamRules: TeamRule[]
+): RoundData[] {
   const schedule: RoundData[] = [];
   const playCounts: Record<number, number> = {};
   const pairHistory: Record<number, Record<number, number>> = {};
@@ -215,7 +273,7 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
     }
 
     const playersPerRound = courtsToUse * 4;
-  
+    
     let selectedMatches: Match[] | null = null;
     let selectedResting: number[] = [];
     
@@ -248,7 +306,7 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
        const playingThisRound = playerIds.slice(0, playersPerRound);
        const restingThisRound = playerIds.slice(playersPerRound).sort((a, b) => a - b);
        
-       const pairing = findValidPairing(playingThisRound, pairHistory, allowedRepeat);
+       const pairing = findValidPairing(playingThisRound, pairHistory, players, teamRules, allowedRepeat);
        
        if (pairing) {
           for (let i = pairing.length - 1; i > 0; i--) {
@@ -277,6 +335,7 @@ function generateMatches(numPlayers: number, numCourts: number, numRounds: numbe
     }
 
     if (!selectedMatches) {
+        if (r === 1) alert("Không thể xếp cặp với các quy tắc và số lượng VĐV hiện tại. Vui lòng kiểm tra lại cấu hình nhóm.");
         break;
     }
     
@@ -314,8 +373,6 @@ function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfi
       </div>
 
       <div className="bg-white rounded-xl shadow-[0_2px_4px_rgba(0,0,0,0.02)] p-4 border border-slate-200 space-y-5">
-        
-        {/* Số VĐV */}
         <div>
           <label className="block text-sm font-bold text-slate-700 mb-2 uppercase text-[11px]">Số lượng Vận Động Viên (Tối thiểu: 4)</label>
           <input 
@@ -326,7 +383,6 @@ function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfi
           />
         </div>
 
-        {/* Số Sân */}
         <div>
           <label className="block text-sm font-bold text-slate-700 mb-2 uppercase text-[11px]">
             Số Sân Thi Đấu 
@@ -341,7 +397,6 @@ function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfi
           <p className="text-[10px] text-slate-400 mt-1.5">*Mỗi sân yêu cầu 4 VĐV. Các VĐV còn thừa sẽ nghỉ xoay vòng.</p>
         </div>
 
-        {/* Số Vòng */}
         <div>
           <label className="block text-sm font-bold text-slate-700 mb-2 uppercase text-[11px]">Số Vòng Đấu</label>
           <input 
@@ -351,11 +406,10 @@ function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfi
             className="w-full bg-slate-50 border border-slate-200 font-bold text-slate-800 rounded-lg px-4 py-3 focus:outline-none focus:border-lime-500 transition-colors"
           />
         </div>
-
       </div>
 
       <button 
-        onClick={() => onNext({ numPlayers, numCourts, numRounds })}
+        onClick={() => onNext({ ...initialConfig, numPlayers, numCourts, numRounds })}
         className="w-full mt-6 bg-lime-500 hover:bg-lime-600 text-white font-bold py-4 rounded-xl shadow-[0_4px_6px_-1px_rgba(132,204,22,0.2)] flex items-center justify-center gap-2 uppercase tracking-wide transition-colors active:scale-[0.98]"
       >
         Tiếp theo
@@ -366,49 +420,147 @@ function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfi
 }
 
 // ==========================================
-// BƯỚC 1: NHẬP TÊN VĐV
+// BƯỚC 1: NHẬP TÊN VĐV VÀ NHÓM
 // ==========================================
-function Step1Players({ config, initialPlayers, onStart, onBack }: any) {
-  const [localPlayers, setLocalPlayers] = useState<Record<number, string>>(initialPlayers);
+function Step1Players({ config, initialPlayers, onStart, onBack, key }: any) {
+  const [groups, setGroups] = useState<string[]>(config.groups || ['Trình A', 'Trình B']);
+  const [teamRules, setTeamRules] = useState<TeamRule[]>(config.teamRules || []);
+  const [localPlayers, setLocalPlayers] = useState<Record<number, {name: string, group: string}>>(initialPlayers);
+
+  const addGroup = () => {
+    const name = prompt('Nhập tên nhóm mới (VD: Trình C):');
+    if (name && !groups.includes(name)) setGroups([...groups, name]);
+  };
+
+  const removeGroup = (g: string) => {
+    if (groups.length <= 1) return alert('Phải có ít nhất 1 nhóm.');
+    setGroups(groups.filter(x => x !== g));
+    setTeamRules(teamRules.filter(r => r.g1 !== g && r.g2 !== g));
+    const newPlayers = { ...localPlayers };
+    Object.keys(newPlayers).forEach(k => {
+      const id = Number(k);
+      if (newPlayers[id].group === g) newPlayers[id].group = groups[0] !== g ? groups[0] : groups[1];
+    });
+    setLocalPlayers(newPlayers);
+  };
+
+  const addRule = () => {
+    if (groups.length === 0) return;
+    setTeamRules([...teamRules, { id: Math.random().toString(), g1: groups[0], g2: groups[0] }]);
+  };
+
+  const updateRule = (id: string, field: 'g1' | 'g2', val: string) => {
+    setTeamRules(teamRules.map(r => r.id === id ? { ...r, [field]: val } : r));
+  };
+
+  const start = () => {
+    onStart(localPlayers, { ...config, groups, teamRules });
+  };
 
   return (
     <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="p-4">
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-6">
         <button onClick={onBack} className="p-2 bg-slate-200 text-slate-600 rounded-full hover:bg-slate-300">
           <ArrowLeft size={16} />
         </button>
-        <h3 className="text-sm text-slate-500 uppercase font-bold m-0">Nhập danh sách VĐV ({config.numPlayers})</h3>
+        <h3 className="text-sm text-slate-500 uppercase font-bold m-0">Quản lý nhóm & VĐV</h3>
       </div>
 
-      <div className="bg-white border border-slate-200 rounded-xl mb-6 shadow-[0_2px_4px_rgba(0,0,0,0.02)] overflow-hidden">
-        {Array.from({ length: config.numPlayers }).map((_, i) => {
-          const id = i + 1;
-          return (
-            <div key={id} className="flex items-center p-3 border-b border-slate-100 last:border-0">
-              <span className="w-7 h-7 flex-shrink-0 flex items-center justify-center bg-slate-200 text-slate-700 rounded-full font-bold text-xs mr-3">
-                {id}
-              </span>
-              <input
-                type="text"
-                value={localPlayers[id] || ''}
-                onChange={(e) => setLocalPlayers({ ...localPlayers, [id]: e.target.value })}
-                className="flex-1 bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-semibold focus:border-lime-500 focus:outline-none focus:bg-white"
-                placeholder={`Tên VĐV ${id}`}
-              />
+      {/* Quản lý nhóm */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-[11px] font-bold text-slate-700 uppercase">1. Chia nhóm trình độ</label>
+          <button onClick={addGroup} className="text-[11px] font-bold text-lime-600 bg-lime-100 px-2 py-1 flex items-center gap-1 rounded hover:bg-lime-200">
+            <Plus size={12}/> Thêm nhóm
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {groups.map(g => (
+            <div key={g} className="bg-white border border-slate-200 pl-3 pr-1 py-1 rounded-full flex items-center gap-2 text-sm font-semibold shadow-sm text-slate-800">
+              {g}
+              <button onClick={() => removeGroup(g)} className="text-slate-400 hover:text-red-500 bg-slate-100 rounded-full p-1"><X size={12}/></button>
             </div>
-          );
-        })}
+          ))}
+        </div>
+      </div>
+
+      {/* Quy tắc Team */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <label className="text-[11px] font-bold text-slate-700 uppercase">2. Đội hình hợp lệ <span className="opacity-60 normal-case ml-1">- {teamRules.length === 0 ? "Ghép tự do" : "Ghép theo luật"}</span></label>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm mb-2">
+           {teamRules.length === 0 ? (
+             <p className="text-xs text-slate-500 mb-3">Hiện tại chưa có luật ghép cặp nào. Hệ thống sẽ ghép ngẫu nhiên bất kỳ VĐV nào với nhau.</p>
+           ) : (
+             <div className="space-y-2 mb-3">
+               {teamRules.map(rule => (
+                  <div key={rule.id} className="flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                    <select value={rule.g1} onChange={(e) => updateRule(rule.id, 'g1', e.target.value)} className="flex-1 bg-white border border-slate-200 rounded p-1.5 text-xs font-bold outline-none">
+                      {groups.map(g => <option key={g} value={g}>{g}</option>)}
+                    </select>
+                    <span className="text-xs font-bold text-slate-400">+</span>
+                    <select value={rule.g2} onChange={(e) => updateRule(rule.id, 'g2', e.target.value)} className="flex-1 bg-white border border-slate-200 rounded p-1.5 text-xs font-bold outline-none">
+                      {groups.map(g => <option key={g} value={g}>{g}</option>)}
+                    </select>
+                    <button onClick={() => removeRule(rule.id)} className="p-1 px-2 hover:bg-red-100 text-slate-400 hover:text-red-500 rounded"><X size={14}/></button>
+                  </div>
+               ))}
+             </div>
+           )}
+           <button onClick={addRule} className="w-full py-2 border-2 border-dashed border-slate-200 rounded-lg text-xs font-bold text-slate-500 hover:border-lime-400 hover:text-lime-600 transition-colors flex items-center justify-center gap-1">
+              <Plus size={14} /> Thêm đội hình hợp lệ
+           </button>
+        </div>
+      </div>
+
+      {/* Danh sách VĐV */}
+      <div className="mb-6">
+        <label className="text-[11px] font-bold text-slate-700 uppercase mb-2 block">3. Danh sách VĐV ({config.numPlayers})</label>
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          {Array.from({ length: config.numPlayers }).map((_, i) => {
+            const id = i + 1;
+            const pGroup = localPlayers[id]?.group || groups[0];
+            return (
+              <div key={id} className="flex items-center p-3 border-b border-slate-100 last:border-0 relative gap-3">
+                <span className="w-6 h-6 flex-shrink-0 flex items-center justify-center bg-slate-200 text-slate-700 rounded-full font-bold text-[10px]">
+                  {id}
+                </span>
+                <input
+                  type="text"
+                  value={localPlayers[id]?.name || ''}
+                  onChange={(e) => setLocalPlayers({ ...localPlayers, [id]: { ...localPlayers[id], name: e.target.value, group: localPlayers[id]?.group || groups[0] } })}
+                  className="flex-[2] bg-slate-50 border border-slate-200 rounded-md px-3 py-2 text-sm font-semibold focus:border-lime-500 focus:outline-none focus:bg-white"
+                  placeholder={`Tên VĐV ${id}`}
+                />
+                {groups.length > 0 && (
+                  <select 
+                    value={pGroup}
+                    onChange={(e) => setLocalPlayers({ ...localPlayers, [id]: { ...localPlayers[id], group: e.target.value } })}
+                    className={`flex-1 min-w-0 bg-transparent border-none text-xs font-bold outline-none cursor-pointer p-0 m-0 focus:ring-0 ${pGroup === groups[0] ? 'text-blue-600' : pGroup === groups[1] ? 'text-amber-600' : 'text-emerald-600'}`}
+                  >
+                    {groups.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
       
       <button
-        onClick={() => onStart(localPlayers)}
-        className="w-full flex items-center justify-center gap-2 bg-lime-500 hover:bg-lime-600 shadow-[0_4px_6px_-1px_rgba(132,204,22,0.2)] text-white font-bold py-4 rounded-xl transition-colors active:scale-[0.98] uppercase tracking-wide"
+        onClick={start}
+        className="w-full flex items-center justify-center gap-2 bg-lime-500 hover:bg-lime-600 shadow-[0_4px_6px_-1px_rgba(132,204,22,0.2)] text-white font-bold py-4 rounded-xl transition-colors active:scale-[0.98] uppercase tracking-wide sticky bottom-4 z-10"
       >
         <Play className="fill-current" size={18} />
         Bắt đầu xếp lịch
       </button>
     </motion.div>
   );
+
+  function removeRule(id: string) {
+    setTeamRules(teamRules.filter(r => r.id !== id));
+  }
 }
 
 // ==========================================
@@ -418,7 +570,7 @@ function Step1Players({ config, initialPlayers, onStart, onBack }: any) {
 // ==========================================
 // THÀNH PHẦN TAB: THI ĐẤU (Matches)
 // ==========================================
-function MatchesTab({ players, scores, setScores, schedule }: { players: Record<number, string>, scores: any, setScores: any, schedule: RoundData[], key?: string }) {
+function MatchesTab({ players, scores, setScores, schedule }: { players: Record<number, {name: string, group: string}>, scores: any, setScores: any, schedule: RoundData[], key?: string }) {
   const [selectedRound, setSelectedRound] = useState(1);
   const roundData = schedule.find(r => r.round === selectedRound);
 
@@ -466,7 +618,7 @@ function MatchesTab({ players, scores, setScores, schedule }: { players: Record<
           <div className="flex flex-wrap gap-2">
             {roundData.rest.map(id => (
               <span key={id} className="bg-red-50 text-red-500 px-2.5 py-1 rounded-full text-[11px] font-semibold border border-red-100">
-                {players[id]} (P{id})
+                {players[id]?.name || `P${id}`}
               </span>
             ))}
           </div>
@@ -509,8 +661,8 @@ function MatchCard({ round, court, t1, t2, players, scores, setScores }: any) {
       </div>
       <div className="grid grid-cols-[1fr_40px_1fr] gap-2.5 items-center">
         <div className="text-center overflow-hidden">
-          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t1[0]]} <span className="opacity-50 text-[10px]">(P{t1[0]})</span></span>
-          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t1[1]]} <span className="opacity-50 text-[10px]">(P{t1[1]})</span></span>
+          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t1[0]]?.name} <span className="opacity-50 text-[10px]">(P{t1[0]}{players[t1[0]]?.group ? ` - ${players[t1[0]].group}` : ''})</span></span>
+          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t1[1]]?.name} <span className="opacity-50 text-[10px]">(P{t1[1]}{players[t1[1]]?.group ? ` - ${players[t1[1]].group}` : ''})</span></span>
           <input 
             type="number" 
             value={localT1} 
@@ -521,8 +673,8 @@ function MatchCard({ round, court, t1, t2, players, scores, setScores }: any) {
         </div>
         <div className="text-center font-black text-slate-400">VS</div>
         <div className="text-center overflow-hidden">
-          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t2[0]]} <span className="opacity-50 text-[10px]">(P{t2[0]})</span></span>
-          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t2[1]]} <span className="opacity-50 text-[10px]">(P{t2[1]})</span></span>
+          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t2[0]]?.name} <span className="opacity-50 text-[10px]">(P{t2[0]}{players[t2[0]]?.group ? ` - ${players[t2[0]].group}` : ''})</span></span>
+          <span className="bg-slate-100 rounded-md p-1.5 my-1 text-[13px] font-semibold block text-slate-800 truncate">{players[t2[1]]?.name} <span className="opacity-50 text-[10px]">(P{t2[1]}{players[t2[1]]?.group ? ` - ${players[t2[1]].group}` : ''})</span></span>
           <input 
             type="number" 
             value={localT2} 
@@ -546,7 +698,7 @@ function MatchCard({ round, court, t1, t2, players, scores, setScores }: any) {
 // ==========================================
 // THÀNH PHẦN TAB: BẢNG XẾP HẠNG
 // ==========================================
-function LeaderboardTab({ players, scores, schedule, config }: { players: Record<number, string>, scores: any, schedule: RoundData[], config: TournamentConfig, key?: string }) {
+function LeaderboardTab({ players, scores, schedule, config }: { players: Record<number, {name: string, group: string}>, scores: any, schedule: RoundData[], config: TournamentConfig, key?: string }) {
   
   // Calculate scores for all players
   const leaderboard = Array.from({ length: config.numPlayers }).map((_, i) => {
@@ -570,7 +722,7 @@ function LeaderboardTab({ players, scores, schedule, config }: { players: Record
       });
     });
 
-    return { id, name: players[id], total, roundScores };
+    return { id, name: players[id]?.name, group: players[id]?.group, total, roundScores };
   });
 
   // Sort descending
@@ -610,7 +762,7 @@ function LeaderboardTab({ players, scores, schedule, config }: { players: Record
                     <span className={rankStyle}>{rank}</span>
                   </td>
                   <td className={`p-2 py-2.5 font-bold text-slate-800 whitespace-nowrap sticky left-10 z-10 ${rowBg || 'bg-white'} shadow-[2px_0_4px_rgba(0,0,0,0.02)]`}>
-                    {player.name} <span className="opacity-60 font-normal text-xs">(P{player.id})</span>
+                    {player.name} <span className="opacity-60 font-normal text-[10px] block -mt-1">{player.group} (P{player.id})</span>
                   </td>
                   <td className={`p-2 py-2.5 font-bold text-slate-800 text-right pr-4 ${rowBg || 'bg-white'} z-0`}>
                     {player.total}
