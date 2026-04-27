@@ -185,48 +185,6 @@ export default function App() {
 // ==========================================
 // THUẬT TOÁN TẠO LỊCH CÔNG BẰNG & KHÔNG TRÙNG CẶP
 // ==========================================
-function findValidPairing(
-  pool: number[], 
-  pairHistory: Record<number, Record<number, number>>, 
-  players: Record<number, {name: string, group: string}>,
-  teamRules: TeamRule[],
-  allowedRepeat: number = 0
-): number[][] | null {
-    if (pool.length === 0) return [];
-    
-    const p1 = pool[0];
-    const others = pool.slice(1);
-    
-    // Shuffle others to introduce variety in pairings
-    for (let i = others.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [others[i], others[j]] = [others[j], others[i]];
-    }
-    
-    for (let i = 0; i < others.length; i++) {
-        const p2 = others[i];
-        
-        let isValidPair = false;
-        if (teamRules.length === 0) {
-            isValidPair = true; // No rules, any pair is valid
-        } else {
-            const g1 = players[p1].group;
-            const g2 = players[p2].group;
-            isValidPair = teamRules.some(rule => 
-               (rule.g1 === g1 && rule.g2 === g2) || (rule.g1 === g2 && rule.g2 === g1)
-            );
-        }
-
-        if (isValidPair && pairHistory[p1][p2] <= allowedRepeat) {
-            const remaining = others.filter(x => x !== p2);
-            const subPairing = findValidPairing(remaining, pairHistory, players, teamRules, allowedRepeat);
-            if (subPairing !== null) {
-                return [[p1, p2], ...subPairing];
-            }
-        }
-    }
-    return null;
-}
 
 function generateMatches(
   numPlayers: number, 
@@ -250,8 +208,8 @@ function generateMatches(
   let r = 1;
   while (true) {
     const counts = Object.values(playCounts);
-    const maxC = Math.max(...counts);
-    const minC = Math.min(...counts);
+    const maxC = Math.max(...counts, 0);
+    const minC = Math.min(...counts, 0);
 
     if (r > numRounds && maxC === minC) {
       break;
@@ -272,30 +230,32 @@ function generateMatches(
       courtsToUse = Math.min(numCourts, Math.max(1, matchesNeeded));
     }
 
-    const playersPerRound = courtsToUse * 4;
-    
     let selectedMatches: Match[] | null = null;
     let selectedResting: number[] = [];
     
     let allowedRepeat = 0;
     let attempts = 0;
+    let ignoreRules = false;
+    let totalIterations = 0;
     
-    while (!selectedMatches && allowedRepeat <= numRounds) {
+    while (!selectedMatches && totalIterations < 2000) {
        attempts++;
+       totalIterations++;
        
-       const randomness = Math.floor(attempts / 100) * 0.5;
+       const randomness = Math.floor(attempts / 20) * 0.5;
        
-       if (attempts > 500) {
+       if (attempts > 200) {
           allowedRepeat++;
           attempts = 0; 
+          if (allowedRepeat > 3) {
+              if (!ignoreRules && teamRules.length > 0) {
+                  ignoreRules = true;
+                  allowedRepeat = 0;
+              }
+          }
        }
 
        const playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
-       for (let i = playerIds.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [playerIds[i], playerIds[j]] = [playerIds[j], playerIds[i]];
-       }
-       
        const weights: Record<number, number> = {};
        playerIds.forEach(id => {
            weights[id] = playCounts[id] + Math.random() * randomness;
@@ -303,31 +263,59 @@ function generateMatches(
        
        playerIds.sort((a, b) => weights[a] - weights[b]);
        
-       const playingThisRound = playerIds.slice(0, playersPerRound);
-       const restingThisRound = playerIds.slice(playersPerRound).sort((a, b) => a - b);
+       const neededPairs = courtsToUse * 2;
+       let currentPairs: number[][] = [];
+       let used = new Set<number>();
        
-       const pairing = findValidPairing(playingThisRound, pairHistory, players, teamRules, allowedRepeat);
+       for (let i = 0; i < playerIds.length && currentPairs.length < neededPairs; i++) {
+           const p1 = playerIds[i];
+           if (used.has(p1)) continue;
+           
+           for (let j = i + 1; j < playerIds.length; j++) {
+               const p2 = playerIds[j];
+               if (used.has(p2)) continue;
+               
+               let isValidPair = false;
+               if (ignoreRules || teamRules.length === 0) {
+                   isValidPair = true;
+               } else {
+                   const g1 = players[p1]?.group || '';
+                   const g2 = players[p2]?.group || '';
+                   isValidPair = teamRules.some(rule => 
+                      (rule.g1 === g1 && rule.g2 === g2) || (rule.g1 === g2 && rule.g2 === g1)
+                   );
+               }
+
+               if (isValidPair && pairHistory[p1][p2] <= allowedRepeat) {
+                   currentPairs.push([p1, p2]);
+                   used.add(p1);
+                   used.add(p2);
+                   break;
+               }
+           }
+       }
        
-       if (pairing) {
-          for (let i = pairing.length - 1; i > 0; i--) {
+       if (currentPairs.length === neededPairs) {
+          // Shuffle to randomize opponents
+          for (let i = currentPairs.length - 1; i > 0; i--) {
              const j = Math.floor(Math.random() * (i + 1));
-             [pairing[i], pairing[j]] = [pairing[j], pairing[i]];
+             [currentPairs[i], currentPairs[j]] = [currentPairs[j], currentPairs[i]];
           }
+          
           const matches: Match[] = [];
           for (let c = 0; c < courtsToUse; c++) {
-             if (c * 2 + 1 < pairing.length) {
-                 matches.push({
-                    court: c + 1,
-                    t1: pairing[c * 2],
-                    t2: pairing[c * 2 + 1]
-                 });
-             }
+             matches.push({
+                court: c + 1,
+                t1: currentPairs[c * 2],
+                t2: currentPairs[c * 2 + 1]
+             });
           }
           selectedMatches = matches;
-          selectedResting = restingThisRound;
+          selectedResting = playerIds.filter(id => !used.has(id)).sort((a, b) => a - b);
           
-          playingThisRound.forEach(id => playCounts[id]++);
-          for (const pair of pairing) {
+          for (const pair of currentPairs) {
+             playCounts[pair[0]]++;
+             playCounts[pair[1]]++;
              pairHistory[pair[0]][pair[1]]++;
              pairHistory[pair[1]][pair[0]]++;
           }
@@ -335,7 +323,7 @@ function generateMatches(
     }
 
     if (!selectedMatches) {
-        if (r === 1) alert("Không thể xếp cặp với các quy tắc và số lượng VĐV hiện tại. Vui lòng kiểm tra lại cấu hình nhóm.");
+        if (r === 1) alert("Không đủ VĐV hoặc quy tắc quá khắt khe để tạo trận. Vui lòng kiểm tra lại cấu hình số lượng VĐV hoặc quy tắc nhóm.");
         break;
     }
     
@@ -349,7 +337,7 @@ function generateMatches(
 // ==========================================
 // BƯỚC 0: CẤU HÌNH GIẢI ĐẤU
 // ==========================================
-function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfig, onNext: (c: TournamentConfig) => void, key?: string }) {
+function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfig, onNext: (c: TournamentConfig) => void }) {
   const [numPlayers, setNumPlayers] = useState(initialConfig.numPlayers);
   const [numCourts, setNumCourts] = useState(initialConfig.numCourts);
   const [numRounds, setNumRounds] = useState(initialConfig.numRounds);
@@ -422,7 +410,7 @@ function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfi
 // ==========================================
 // BƯỚC 1: NHẬP TÊN VĐV VÀ NHÓM
 // ==========================================
-function Step1Players({ config, initialPlayers, onStart, onBack, key }: any) {
+function Step1Players({ config, initialPlayers, onStart, onBack }: any) {
   const [groups, setGroups] = useState<string[]>(config.groups || ['Trình A', 'Trình B']);
   const [teamRules, setTeamRules] = useState<TeamRule[]>(config.teamRules || []);
   const [localPlayers, setLocalPlayers] = useState<Record<number, {name: string, group: string}>>(initialPlayers);
@@ -570,7 +558,7 @@ function Step1Players({ config, initialPlayers, onStart, onBack, key }: any) {
 // ==========================================
 // THÀNH PHẦN TAB: THI ĐẤU (Matches)
 // ==========================================
-function MatchesTab({ players, scores, setScores, schedule }: { players: Record<number, {name: string, group: string}>, scores: any, setScores: any, schedule: RoundData[], key?: string }) {
+function MatchesTab({ players, scores, setScores, schedule }: { players: Record<number, {name: string, group: string}>, scores: any, setScores: any, schedule: RoundData[] }) {
   const [selectedRound, setSelectedRound] = useState(1);
   const roundData = schedule.find(r => r.round === selectedRound);
 
@@ -698,7 +686,7 @@ function MatchCard({ round, court, t1, t2, players, scores, setScores }: any) {
 // ==========================================
 // THÀNH PHẦN TAB: BẢNG XẾP HẠNG
 // ==========================================
-function LeaderboardTab({ players, scores, schedule, config }: { players: Record<number, {name: string, group: string}>, scores: any, schedule: RoundData[], config: TournamentConfig, key?: string }) {
+function LeaderboardTab({ players, scores, schedule, config }: { players: Record<number, {name: string, group: string}>, scores: any, schedule: RoundData[], config: TournamentConfig }) {
   
   // Calculate scores for all players
   const leaderboard = Array.from({ length: config.numPlayers }).map((_, i) => {
