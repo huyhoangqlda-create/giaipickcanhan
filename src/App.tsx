@@ -6,12 +6,14 @@ import { motion, AnimatePresence } from 'motion/react';
 interface Match { court: number; t1: number[]; t2: number[]; }
 interface RoundData { round: number; matches: Match[]; rest: number[]; isBonus?: boolean; }
 interface TeamRule { id: string; g1: string; g2: string; }
+interface MatchRule { id: string; r1: string; r2: string; }
 interface TournamentConfig { 
   numPlayers: number; 
   numCourts: number; 
   numRounds: number; 
   groups: string[];
   teamRules: TeamRule[];
+  matchRules?: MatchRule[];
 }
 
 type TabType = 'matches' | 'leaderboard';
@@ -99,7 +101,8 @@ export default function App() {
       finalConfig.numCourts, 
       finalConfig.numRounds,
       finalPlayers,
-      finalConfig.teamRules
+      finalConfig.teamRules,
+      finalConfig.matchRules
     );
     setSchedule(newSchedule);
     setScores({});
@@ -191,7 +194,8 @@ function generateMatches(
   numCourts: number, 
   numRounds: number,
   players: Record<number, {name: string, group: string}>,
-  teamRules: TeamRule[]
+  teamRules: TeamRule[],
+  matchRules?: MatchRule[]
 ): RoundData[] {
   const schedule: RoundData[] = [];
   const playCounts: Record<number, number> = {};
@@ -206,6 +210,8 @@ function generateMatches(
   }
 
   let r = 1;
+  const MAX_BONUS_ROUNDS = 10;
+  
   while (true) {
     const counts = Object.values(playCounts);
     const maxC = Math.max(...counts, 0);
@@ -215,17 +221,25 @@ function generateMatches(
       break;
     }
 
-    if (r > 50) break; // Guard
+    if (r > numRounds + MAX_BONUS_ROUNDS) {
+      break;
+    }
 
     let courtsToUse = numCourts;
+    let target = maxC;
+    
     if (r > numRounds) {
-      let target = maxC;
       let deficit = 0;
-      while (true) {
+      let safeGuard = 0;
+      while (safeGuard < 20) {
         deficit = counts.reduce((acc, c) => acc + (target - c), 0);
-        if (deficit % 4 === 0) break;
+        if (deficit % 4 === 0 && deficit > 0) break;
+        if (deficit === 0) break;
         target++;
+        safeGuard++;
       }
+      if (deficit === 0) break;
+
       const matchesNeeded = deficit / 4;
       courtsToUse = Math.min(numCourts, Math.max(1, matchesNeeded));
     }
@@ -236,36 +250,29 @@ function generateMatches(
     let allowedRepeat = 0;
     let attempts = 0;
     let ignoreRules = false;
-    let totalIterations = 0;
     
-    while (!selectedMatches && totalIterations < 5000) {
+    while (!selectedMatches && attempts < 500) {
        attempts++;
-       totalIterations++;
-       
-       let randomness = Math.floor(attempts / 10) * 0.2; // Max out at 1.0 before we increment allowedRepeat
-       if (r > numRounds) {
-          // STRICTLY preserve playCounts priority in bonus rounds to prevent maxC inflation
-          randomness = 0.49; 
-       }
        
        if (attempts > 50) {
-          allowedRepeat++;
-          attempts = 0; 
-          if (allowedRepeat > 3) {
-              if (!ignoreRules && teamRules.length > 0) {
-                  ignoreRules = true;
-                  allowedRepeat = 0;
-              }
-          }
+           allowedRepeat = Math.floor(attempts / 50);
+           if (allowedRepeat > 3 && teamRules.length > 0) {
+               ignoreRules = true;
+           }
        }
 
-       const playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
-       const weights: Record<number, number> = {};
-       playerIds.forEach(id => {
-           weights[id] = playCounts[id] + Math.random() * randomness;
-       });
+       let playerIds = Array.from({ length: numPlayers }, (_, i) => i + 1);
        
-       playerIds.sort((a, b) => weights[a] - weights[b]);
+       if (r > numRounds && attempts < 200) {
+           playerIds = playerIds.filter(id => playCounts[id] < target);
+       }
+
+       for (let i = playerIds.length - 1; i > 0; i--) {
+           const j = Math.floor(Math.random() * (i + 1));
+           [playerIds[i], playerIds[j]] = [playerIds[j], playerIds[i]];
+       }
+       
+       playerIds.sort((a, b) => playCounts[a] - playCounts[b]);
        
        const neededPairs = courtsToUse * 2;
        let currentPairs: number[][] = [];
@@ -275,6 +282,7 @@ function generateMatches(
            const p1 = playerIds[i];
            if (used.has(p1)) continue;
            
+           let validCandidates: number[] = [];
            for (let j = i + 1; j < playerIds.length; j++) {
                const p2 = playerIds[j];
                if (used.has(p2)) continue;
@@ -291,37 +299,81 @@ function generateMatches(
                }
 
                if (isValidPair && pairHistory[p1][p2] <= allowedRepeat) {
-                   currentPairs.push([p1, p2]);
-                   used.add(p1);
-                   used.add(p2);
-                   break;
+                   validCandidates.push(p2);
                }
+           }
+           
+           if (validCandidates.length > 0) {
+               const p2 = validCandidates[Math.floor(Math.random() * validCandidates.length)];
+               currentPairs.push([p1, p2]);
+               used.add(p1);
+               used.add(p2);
            }
        }
        
        if (currentPairs.length === neededPairs) {
-          // Shuffle to randomize opponents
+          const getRuleId = (p1: number, p2: number) => {
+              const g1 = players[p1]?.group || '';
+              const g2 = players[p2]?.group || '';
+              const validRule = teamRules.find(rule => 
+                 (rule.g1 === g1 && rule.g2 === g2) || (rule.g1 === g2 && rule.g2 === g1)
+              );
+              return validRule ? validRule.id : null;
+          };
+
+          const checkMatchup = (unmatched: number[][], currentM: Match[]): Match[] | null => {
+              if (unmatched.length === 0) return currentM;
+              const t1 = unmatched[0];
+              for (let i = 1; i < unmatched.length; i++) {
+                  const t2 = unmatched[i];
+                  let isValid = true;
+
+                  if (!ignoreRules && matchRules && matchRules.length > 0) {
+                      const r1 = getRuleId(t1[0], t1[1]);
+                      const r2 = getRuleId(t2[0], t2[1]);
+                      if (r1 && r2) {
+                          isValid = matchRules.some(m => 
+                              (m.r1 === r1 && m.r2 === r2) || (m.r1 === r2 && m.r2 === r1)
+                          );
+                      } else {
+                          // Nếu pair không thuộc team rule nào thì không hợp chuẩn MatchRule
+                          isValid = false; 
+                      }
+                  }
+
+                  if (isValid) {
+                      const nextUnmatched = unmatched.filter((_, idx) => idx !== 0 && idx !== i);
+                      const res = checkMatchup(nextUnmatched, [...currentM, { court: currentM.length + 1, t1, t2 }]);
+                      if (res) return res;
+                  }
+              }
+              return null;
+          };
+
           for (let i = currentPairs.length - 1; i > 0; i--) {
              const j = Math.floor(Math.random() * (i + 1));
              [currentPairs[i], currentPairs[j]] = [currentPairs[j], currentPairs[i]];
           }
           
-          const matches: Match[] = [];
-          for (let c = 0; c < courtsToUse; c++) {
-             matches.push({
-                court: c + 1,
-                t1: currentPairs[c * 2],
-                t2: currentPairs[c * 2 + 1]
-             });
-          }
-          selectedMatches = matches;
-          selectedResting = playerIds.filter(id => !used.has(id)).sort((a, b) => a - b);
-          
-          for (const pair of currentPairs) {
-             playCounts[pair[0]]++;
-             playCounts[pair[1]]++;
-             pairHistory[pair[0]][pair[1]]++;
-             pairHistory[pair[1]][pair[0]]++;
+          const validMatches = checkMatchup(currentPairs, []);
+
+          if (validMatches) {
+              selectedMatches = validMatches;
+              
+              const allUsed = new Set<number>();
+              for(const pair of currentPairs) {
+                  allUsed.add(pair[0]);
+                  allUsed.add(pair[1]);
+              }
+              const allPlayers = Array.from({ length: numPlayers }, (_, i) => i + 1);
+              selectedResting = allPlayers.filter(id => !allUsed.has(id)).sort((a, b) => a - b);
+              
+              for (const pair of currentPairs) {
+                 playCounts[pair[0]]++;
+                 playCounts[pair[1]]++;
+                 pairHistory[pair[0]][pair[1]]++;
+                 pairHistory[pair[1]][pair[0]]++;
+              }
           }
        }
     }
@@ -417,6 +469,7 @@ function Step0Config({ initialConfig, onNext }: { initialConfig: TournamentConfi
 function Step1Players({ config, initialPlayers, onStart, onBack }: any) {
   const [groups, setGroups] = useState<string[]>(config.groups || ['Trình A', 'Trình B']);
   const [teamRules, setTeamRules] = useState<TeamRule[]>(config.teamRules || []);
+  const [matchRules, setMatchRules] = useState<MatchRule[]>(config.matchRules || []);
   const [localPlayers, setLocalPlayers] = useState<Record<number, {name: string, group: string}>>(initialPlayers);
 
   const addGroup = () => {
@@ -445,8 +498,28 @@ function Step1Players({ config, initialPlayers, onStart, onBack }: any) {
     setTeamRules(teamRules.map(r => r.id === id ? { ...r, [field]: val } : r));
   };
 
+  const removeRule = (id: string) => {
+    setTeamRules(teamRules.filter(r => r.id !== id));
+    setMatchRules(matchRules.filter(m => m.r1 !== id && m.r2 !== id));
+  };
+
+  const addMatchRule = () => {
+    if (teamRules.length === 0) return alert('Vui lòng tạo đội hình trước');
+    setMatchRules([...matchRules, { id: Math.random().toString(), r1: teamRules[0].id, r2: teamRules[0].id }]);
+  };
+
+  const updateMatchRule = (id: string, field: 'r1' | 'r2', val: string) => {
+    setMatchRules(matchRules.map(r => r.id === id ? { ...r, [field]: val } : r));
+  };
+
+  const removeMatchRule = (id: string) => {
+    setMatchRules(matchRules.filter(r => r.id !== id));
+  };
+
   const start = () => {
-    onStart(localPlayers, { ...config, groups, teamRules });
+    // Lọc bỏ các match rule không hợp lệ trước khi lưu
+    const validMatchRules = matchRules.filter(m => teamRules.some(tr => tr.id === m.r1) && teamRules.some(tr => tr.id === m.r2));
+    onStart(localPlayers, { ...config, groups, teamRules, matchRules: validMatchRules });
   };
 
   return (
@@ -506,9 +579,41 @@ function Step1Players({ config, initialPlayers, onStart, onBack }: any) {
         </div>
       </div>
 
+      {/* Quy tắc ghép cặp đôi */}
+      {teamRules.length > 0 && (
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-[11px] font-bold text-slate-700 uppercase">3. Quy tắc ghép trận hợp lệ <span className="opacity-60 normal-case ml-1">- {matchRules.length === 0 ? "Bất kỳ đội nào cũng có thể đấu nhau" : "Đấu theo luật cấu hình"}</span></label>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm mb-2">
+            {matchRules.length === 0 ? (
+              <p className="text-xs text-slate-500 mb-3">Hệ thống sẽ cho phép các đội hợp lệ thi đấu với nhau một cách ngẫu nhiên.</p>
+            ) : (
+              <div className="space-y-2 mb-3">
+                {matchRules.map(rule => (
+                  <div key={rule.id} className="flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                    <select value={rule.r1} onChange={(e) => updateMatchRule(rule.id, 'r1', e.target.value)} className="flex-1 bg-white border border-slate-200 rounded p-1.5 text-xs font-bold outline-none">
+                      {teamRules.map(tr => <option key={tr.id} value={tr.id}>{tr.g1} + {tr.g2}</option>)}
+                    </select>
+                    <span className="text-xs font-bold text-amber-500">VS</span>
+                    <select value={rule.r2} onChange={(e) => updateMatchRule(rule.id, 'r2', e.target.value)} className="flex-1 bg-white border border-slate-200 rounded p-1.5 text-xs font-bold outline-none">
+                      {teamRules.map(tr => <option key={tr.id} value={tr.id}>{tr.g1} + {tr.g2}</option>)}
+                    </select>
+                    <button onClick={() => removeMatchRule(rule.id)} className="p-1 px-2 hover:bg-red-100 text-slate-400 hover:text-red-500 rounded"><X size={14}/></button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button onClick={addMatchRule} className="w-full py-2 border-2 border-dashed border-slate-200 rounded-lg text-xs font-bold text-slate-500 hover:border-amber-400 hover:text-amber-600 transition-colors flex items-center justify-center gap-1">
+              <Plus size={14} /> Thêm cặp đấu hợp lệ
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Danh sách VĐV */}
       <div className="mb-6">
-        <label className="text-[11px] font-bold text-slate-700 uppercase mb-2 block">3. Danh sách VĐV ({config.numPlayers})</label>
+        <label className="text-[11px] font-bold text-slate-700 uppercase mb-2 block">{teamRules.length > 0 ? "4" : "3"}. Danh sách VĐV ({config.numPlayers})</label>
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           {Array.from({ length: config.numPlayers }).map((_, i) => {
             const id = i + 1;
@@ -549,10 +654,6 @@ function Step1Players({ config, initialPlayers, onStart, onBack }: any) {
       </button>
     </motion.div>
   );
-
-  function removeRule(id: string) {
-    setTeamRules(teamRules.filter(r => r.id !== id));
-  }
 }
 
 // ==========================================
