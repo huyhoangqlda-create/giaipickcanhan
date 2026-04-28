@@ -238,13 +238,17 @@ function generateMatches(
     let ignoreRules = false;
     let totalIterations = 0;
     
-    while (!selectedMatches && totalIterations < 2000) {
+    while (!selectedMatches && totalIterations < 5000) {
        attempts++;
        totalIterations++;
        
-       const randomness = Math.floor(attempts / 20) * 0.5;
+       let randomness = Math.floor(attempts / 10) * 0.2; // Max out at 1.0 before we increment allowedRepeat
+       if (r > numRounds) {
+          // STRICTLY preserve playCounts priority in bonus rounds to prevent maxC inflation
+          randomness = 0.49; 
+       }
        
-       if (attempts > 200) {
+       if (attempts > 50) {
           allowedRepeat++;
           attempts = 0; 
           if (allowedRepeat > 3) {
